@@ -380,8 +380,12 @@ def session_login(user, password, solver_type, api_base_url, client_key):
     if resp_json.get("success"):
         cookies = session.cookies.get_dict()
         if not cookies:
-            # success=True 但无 Set-Cookie：数据中心 IP 常见的软风控表现
-            print("[WARN] 登录 success=True 但未获取到 Cookie，可能被风控拦截")
+            # success=True 但无 Cookie。区分两种成因，便于定位：
+            #   1) 响应未下发 Set-Cookie -> 服务端对数据中心 IP 的软风控
+            #   2) 下发了但未被客户端保存 -> curl_cffi 版本 / cookie 处理问题
+            has_set_cookie = any(k.lower() == "set-cookie" for k in response.headers.keys())
+            print(f"[WARN] 登录 success=True 但未获取到 Cookie"
+                  f"（响应含 Set-Cookie 头: {has_set_cookie}, JSON 字段: {list(resp_json.keys())}）")
             return None
         cookie_string = '; '.join([f"{k}={v}" for k, v in cookies.items()])
         return cookie_string
