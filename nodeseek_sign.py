@@ -335,7 +335,13 @@ def session_login(user, password, solver_type, api_base_url, client_key):
     initial_impersonate = IMPERSONATE_VERSION
     session = requests.Session(impersonate=initial_impersonate)
     print(f"[INFO] 使用初始 impersonate: {initial_impersonate}")
-    session.get("https://www.nodeseek.com/signIn.html")
+    # 预热请求：访问登录页。失败不致命（真正登录在下方 try 中），但需捕获，
+    # 否则网络异常会直接冒泡出 session_login，导致主流程无 try 保护而崩溃。
+    try:
+        session.get("https://www.nodeseek.com/signIn.html")
+    except Exception as e:
+        _debug_print(f"预热 signIn 页面异常: {e}")
+        print(f"[WARN] 访问 signIn 页面异常: {type(e).__name__}")
 
     # NodeSeek 登录接口已改版：验证码 token 改为通过请求头传递，请求体仅保留账号密码。
     # 旧格式（token/source 放在 body）会被后端校验拒绝，返回 "token" is not allowed。
@@ -353,19 +359,36 @@ def session_login(user, password, solver_type, api_base_url, client_key):
     }
     try:
         response = session.post("https://www.nodeseek.com/api/account/signIn", json=data, headers=headers, timeout=REQUEST_TIMEOUT)
-        resp_json = response.json()
-        if resp_json.get("success"):
-            cookies = session.cookies.get_dict()
-            cookie_string = '; '.join([f"{k}={v}" for k, v in cookies.items()])
-            return cookie_string
-        else:
-            _debug_print(f"登录失败: {resp_json.get('message')}")
-            print("登录失败: 认证失败")
-            return None
     except Exception as e:
-        _debug_print(f"登录异常: {e}")
-        print("登录异常: 请求出错")
+        _debug_print(f"登录请求异常: {e}")
+        print(f"登录异常: 请求出错 ({type(e).__name__})")
         return None
+
+    # 无条件输出 HTTP 层诊断（不含 token/cookie 等敏感值），便于在 CI 中定位失败原因。
+    # 此前失败原因全藏在 _debug_print 里，DEBUG 未开时无法诊断。
+    ct = response.headers.get("content-type", "")
+    print(f"[INFO] signIn 响应: HTTP {response.status_code}, content-type={ct}")
+
+    try:
+        resp_json = response.json()
+    except Exception:
+        # 非 JSON 响应：极可能是 Cloudflare 挑战页 / 数据中心 IP 被风控拦截
+        head = (response.text or "")[:200].replace("\n", " ")
+        print(f"[WARN] signIn 返回非 JSON（cloudflare_challenge={_is_cloudflare_challenge(response.text)}）: {head}")
+        return None
+
+    if resp_json.get("success"):
+        cookies = session.cookies.get_dict()
+        if not cookies:
+            # success=True 但无 Set-Cookie：数据中心 IP 常见的软风控表现
+            print("[WARN] 登录 success=True 但未获取到 Cookie，可能被风控拦截")
+            return None
+        cookie_string = '; '.join([f"{k}={v}" for k, v in cookies.items()])
+        return cookie_string
+
+    # 显示后端返回的 message（NodeSeek 的通用提示，不含密码等隐私），便于诊断
+    print(f"登录失败: {resp_json.get('message')}")
+    return None
 
 # ---------------- 签到逻辑 ----------------
 def _is_cloudflare_challenge(text: str) -> bool:
