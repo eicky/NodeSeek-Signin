@@ -337,17 +337,19 @@ def session_login(user, password, solver_type, api_base_url, client_key):
     print(f"[INFO] 使用初始 impersonate: {initial_impersonate}")
     session.get("https://www.nodeseek.com/signIn.html")
 
+    # NodeSeek 登录接口已改版：验证码 token 改为通过请求头传递，请求体仅保留账号密码。
+    # 旧格式（token/source 放在 body）会被后端校验拒绝，返回 "token" is not allowed。
     data = {
         "username": user,
         "password": password,
-        "token": token,
-        "source": "turnstile"
     }
     headers = {
         'origin': "https://www.nodeseek.com",
         'referer': "https://www.nodeseek.com/signIn.html",
         'accept-language': "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-        'Content-Type': "application/json"
+        'Content-Type': "application/json",
+        'x-captcha-token': token,
+        'x-captcha-source': "turnstile",
     }
     try:
         response = session.post("https://www.nodeseek.com/api/account/signIn", json=data, headers=headers, timeout=REQUEST_TIMEOUT)
