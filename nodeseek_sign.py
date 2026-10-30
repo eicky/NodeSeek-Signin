@@ -651,7 +651,12 @@ if __name__ == "__main__":
             print("Cookie文件不存在，将使用空Cookie。")
     else:
         all_cookies = os.getenv("NS_COOKIE", "")
-        
+
+    # FORCE_LOGIN=true 时丢弃现有 Cookie，强制走账号密码自动登录流程（便于在 CI 中验证登录）
+    if _get_env_bool("FORCE_LOGIN", False):
+        print("[INFO] FORCE_LOGIN 已启用，忽略现有 Cookie，强制自动登录")
+        all_cookies = ""
+
     cookie_list = all_cookies.split("&")
     cookie_list = [c.strip() for c in cookie_list if c.strip()]
     

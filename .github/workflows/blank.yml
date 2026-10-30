@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '59 23 * * *'  # 北京时间 00:00 (UTC+8)，对应UTC时间 16:00
   workflow_dispatch:
+    inputs:
+      force_login:
+        description: '忽略 NS_COOKIE，强制走账号密码自动登录（用于验证登录流程）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -47,6 +52,8 @@ jobs:
           
           # Cookie配置
           NS_COOKIE: ${{ vars.NS_COOKIE || secrets.NS_COOKIE }}
+          # 手动触发时置 true，可忽略现有 Cookie 强制验证自动登录流程
+          FORCE_LOGIN: ${{ inputs.force_login || 'false' }}
           NS_RANDOM: ${{ secrets.NS_RANDOM }}
           # 验证码配置
           SOLVER_TYPE: ${{ secrets.SOLVER_TYPE }}
