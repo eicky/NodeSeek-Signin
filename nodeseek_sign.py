@@ -782,8 +782,9 @@ if __name__ == "__main__":
                 except Exception:
                     print(f"发送通知失败")
         else:
-            _debug_print(f"签到失败或Cookie无效: {msg}")
-            print(f"签到失败或Cookie无效")
+            # 失败原因必须无条件可见：CI 里 DEBUG 默认关闭，藏起来就无法判断是
+            # Cookie 过期、被风控还是接口变更
+            print(f"签到失败或Cookie无效: {result} - {msg}")
             
             if user and password:
                 print("尝试重新登录获取新Cookie...")
