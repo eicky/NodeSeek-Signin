@@ -30,8 +30,8 @@ class YesCaptchaSolver:
         self, 
         api_base_url: str = "https://api.yescaptcha.com",
         client_key: str = "",
-        max_retries: int = 20,
-        retry_interval: int = 3,
+        max_retries: int = 36,
+        retry_interval: int = 5,
         timeout: int = None,
         advanced: bool = False
     ):
@@ -61,38 +61,43 @@ class YesCaptchaSolver:
         sitekey: str,
         user_agent: Optional[str] = None,
         verbose: bool = False
-    ) -> str:
+    ) -> Dict[str, Any]:
         """
-        解决 Turnstile 验证并返回令牌
-        
+        解决 Turnstile 验证，返回令牌及其绑定的 User-Agent
+
         参数:
             url: 目标网站 URL
             sitekey: Turnstile sitekey
             user_agent: 自定义 User-Agent
             verbose: 是否打印详细日志
-            
+
         返回:
-            验证令牌字符串
-            
+            {"token": str, "userAgent": Optional[str]}
+            官方文档要求：提交 token 时必须使用返回的 userAgent（若返回了该字段），
+            传入的自定义 UA 与之不同时以返回值为准。
+
         异常:
             YesCaptchaSolverError: 解决验证码时出错
         """
         if verbose:
             print("正在创建 YesCaptcha 验证任务...")
-            
+
         task_id = self._create_task(url, sitekey, user_agent, verbose)
         if not task_id:
             raise YesCaptchaSolverError("创建验证码任务失败")
-            
+
         # 获取任务结果
-        token = self._get_task_result(task_id, verbose)
-        if not token:
+        solution = self._get_task_result(task_id, verbose)
+        if not solution or not solution.get("token"):
             raise YesCaptchaSolverError("获取验证码结果失败")
-            
+
+        token = solution["token"]
         if verbose:
             print(f"验证码解决成功: {token[:30]}...{token[-10:] if len(token) > 30 else ''}")
-            
-        return token
+            if solution.get("userAgent"):
+                print(f"[INFO] 验证码返回的 User-Agent: {solution['userAgent']}")
+
+        return solution
         
     def _create_task(
         self,
@@ -151,8 +156,8 @@ class YesCaptchaSolver:
                 print(f"创建任务过程中发生异常: {e}")
             return None
     
-    def _get_task_result(self, task_id: str, verbose: bool = False) -> Optional[str]:
-        """获取任务结果"""
+    def _get_task_result(self, task_id: str, verbose: bool = False) -> Optional[Dict[str, Any]]:
+        """获取任务结果，返回 solution（含 token 与 userAgent）"""
         
         data = {
             "clientKey": self.client_key,
@@ -182,10 +187,10 @@ class YesCaptchaSolver:
                 
                 # 按照文档，状态为ready时表示已完成
                 if status == "ready":
-                    token = result.get("solution", {}).get("token")
+                    solution = result.get("solution") or {}
                     if verbose:
                         print("任务已完成")
-                    return token
+                    return solution
                 
                 # 按照文档，状态为processing时表示处理中，需等待重试
                 elif status == "processing":

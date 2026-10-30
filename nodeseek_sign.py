@@ -318,11 +318,19 @@ def session_login(user, password, solver_type, api_base_url, client_key):
                 client_key=client_key
             )
 
-        token = solver.solve(
+        solution = solver.solve(
             url="https://www.nodeseek.com/signIn.html",
             sitekey="0x4AAAAAAAaNy7leGjewpVyR",
             verbose=True
         )
+        # YesCaptcha 返回 {"token", "userAgent"}；TurnstileSolver 返回纯 token 字符串。
+        # 文档要求提交 token 时使用验证码服务返回的 userAgent，否则后端可能拒绝。
+        if isinstance(solution, dict):
+            token = solution.get("token")
+            captcha_user_agent = solution.get("userAgent")
+        else:
+            token = solution
+            captcha_user_agent = None
         if not token:
             print("验证码解析失败")
             return None
@@ -357,6 +365,9 @@ def session_login(user, password, solver_type, api_base_url, client_key):
         'x-captcha-token': token,
         'x-captcha-source': "turnstile",
     }
+    if captcha_user_agent:
+        # 必须与生成 token 时的 UA 一致，覆盖 impersonate 自带的值
+        headers['User-Agent'] = captcha_user_agent
     try:
         response = session.post("https://www.nodeseek.com/api/account/signIn", json=data, headers=headers, timeout=REQUEST_TIMEOUT)
     except Exception as e:
