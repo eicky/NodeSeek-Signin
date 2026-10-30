@@ -33,7 +33,8 @@ class YesCaptchaSolver:
         max_retries: int = 36,
         retry_interval: int = 5,
         timeout: int = None,
-        advanced: bool = False
+        advanced: bool = False,
+        task_retries: int = 3
     ):
         """
         初始化 YesCaptcha 验证码解决器
@@ -41,10 +42,11 @@ class YesCaptchaSolver:
         参数:
             api_base_url: API 基础 URL，默认为 YesCaptcha 国际节点
             client_key: API 客户端密钥
-            max_retries: 最大重试次数
-            retry_interval: 重试间隔(秒)
+            max_retries: 单个任务的最大轮询次数
+            retry_interval: 轮询间隔(秒)
             timeout: 请求超时时间(秒)
             advanced: 是否使用高级解析模式(M1)
+            task_retries: 任务失败后的重建次数
         """
         self.api_base_url = api_base_url
         self.create_task_url = f"{api_base_url}/createTask"
@@ -54,6 +56,7 @@ class YesCaptchaSolver:
         self.retry_interval = retry_interval
         self.timeout = timeout if timeout is not None else _get_env_int("TIMEOUT", 15)
         self.advanced = advanced
+        self.task_retries = max(1, task_retries)
     
     def solve(
         self,
@@ -79,25 +82,35 @@ class YesCaptchaSolver:
         异常:
             YesCaptchaSolverError: 解决验证码时出错
         """
-        if verbose:
-            print("正在创建 YesCaptcha 验证任务...")
+        last_error = "未知错误"
+        # 服务端偶发任务卡死 / 返回“验证码未能识别”，单次失败不代表整体不可用，
+        # 重新建任务通常即可成功，因此按 task_retries 重试。
+        for attempt in range(1, self.task_retries + 1):
+            if verbose:
+                print(f"正在创建 YesCaptcha 验证任务...(第 {attempt}/{self.task_retries} 次)")
 
-        task_id = self._create_task(url, sitekey, user_agent, verbose)
-        if not task_id:
-            raise YesCaptchaSolverError("创建验证码任务失败")
+            task_id = self._create_task(url, sitekey, user_agent, verbose)
+            if not task_id:
+                last_error = "创建验证码任务失败"
+                continue
 
-        # 获取任务结果
-        solution = self._get_task_result(task_id, verbose)
-        if not solution or not solution.get("token"):
-            raise YesCaptchaSolverError("获取验证码结果失败")
+            # 获取任务结果
+            solution = self._get_task_result(task_id, verbose)
+            if not solution or not solution.get("token"):
+                last_error = "获取验证码结果失败"
+                if verbose and attempt < self.task_retries:
+                    print(f"[WARN] {last_error}，重新创建任务...")
+                continue
 
-        token = solution["token"]
-        if verbose:
-            print(f"验证码解决成功: {token[:30]}...{token[-10:] if len(token) > 30 else ''}")
-            if solution.get("userAgent"):
-                print(f"[INFO] 验证码返回的 User-Agent: {solution['userAgent']}")
+            token = solution["token"]
+            if verbose:
+                print(f"验证码解决成功: {token[:30]}...{token[-10:] if len(token) > 30 else ''}")
+                if solution.get("userAgent"):
+                    print(f"[INFO] 验证码返回的 User-Agent: {solution['userAgent']}")
 
-        return solution
+            return solution
+
+        raise YesCaptchaSolverError(last_error)
         
     def _create_task(
         self,
