@@ -303,63 +303,7 @@ def save_cookie(var_name: str, cookie: str):
         return False
 
 # ---------------- 登录逻辑 ----------------
-# 登录失败原因分类，用于在通知里给出可操作的指引
-LOGIN_FAIL_REASONS = {
-    "captcha": "验证码服务解析失败",
-    "network": "网络异常或 Cloudflare 挑战拦截",
-    "high_risk": "服务端判定为高风险操作（数据中心 IP 被风控）",
-    "rate_limited": "登录过于频繁被限流",
-    "otp": "账号启用了二次验证，需要邮箱/短信动态码",
-    "no_cookie": "登录成功但服务端未下发 Cookie（IP 被软风控）",
-    "bad_credentials": "用户名或密码错误",
-}
-
-# 最近一次登录失败原因，供主流程推送通知时引用
-LAST_LOGIN_FAILURE = None
-
-
-def _set_login_failure(reason: str, detail: str = ""):
-    global LAST_LOGIN_FAILURE
-    LAST_LOGIN_FAILURE = {"reason": reason, "detail": detail}
-    desc = LOGIN_FAIL_REASONS.get(reason, reason)
-    print(f"登录失败: {desc}" + (f" ({detail})" if detail else ""))
-    return None
-
-
-def _build_login_failure_message(masked_user: str) -> str:
-    """构造登录失败通知正文：说明原因并给出可操作的处理建议。"""
-    failure = LAST_LOGIN_FAILURE or {}
-    reason = failure.get("reason", "")
-    detail = failure.get("detail", "")
-    desc = LOGIN_FAIL_REASONS.get(reason, "未知原因")
-
-    lines = [f"账号 {masked_user} 登录失败", f"原因：{desc}"]
-    if detail:
-        lines.append(f"详情：{detail}")
-
-    if reason in ("high_risk", "no_cookie", "rate_limited", "network"):
-        lines.append("")
-        lines.append("处理建议：")
-        lines.append("1. 在家庭宽带/手机网络下用浏览器登录 NodeSeek")
-        lines.append("2. 打开开发者工具 -> Application -> Cookies，复制 session、pjwt、smac")
-        lines.append("3. 更新仓库 Secret NS_COOKIE（多账号用 & 分隔）")
-        lines.append("说明：NodeSeek 对数据中心 IP 的登录有风控，CI 环境通常无法自动登录。")
-    elif reason == "otp":
-        lines.append("")
-        lines.append("处理建议：账号已开启二次验证，需在账号安全设置中关闭，或改用 Cookie 方式签到。")
-    elif reason == "bad_credentials":
-        lines.append("")
-        lines.append("处理建议：检查 USER/PASS 是否正确。")
-    elif reason == "captcha":
-        lines.append("")
-        lines.append("处理建议：检查验证码服务额度与 CLIENT_KEY 配置。")
-
-    return "\n".join(lines)
-
-
 def session_login(user, password, solver_type, api_base_url, client_key):
-    global LAST_LOGIN_FAILURE
-    LAST_LOGIN_FAILURE = None
     try:
         if solver_type.lower() == "yescaptcha":
             print("正在使用 YesCaptcha 解决验证码...")
@@ -388,10 +332,12 @@ def session_login(user, password, solver_type, api_base_url, client_key):
             token = solution
             captcha_user_agent = None
         if not token:
-            return _set_login_failure("captcha", "未获取到 token")
+            print("验证码解析失败")
+            return None
     except Exception as e:
         _debug_print(f"验证码错误: {e}")
-        return _set_login_failure("captcha", type(e).__name__)
+        print(f"验证码错误")
+        return None
 
     # 优先使用环境变量指定的 IMPERSONATE_VERSION（若未设置则使用默认值），作为首次尝试的指纹
     initial_impersonate = IMPERSONATE_VERSION
@@ -426,7 +372,8 @@ def session_login(user, password, solver_type, api_base_url, client_key):
         response = session.post("https://www.nodeseek.com/api/account/signIn", json=data, headers=headers, timeout=REQUEST_TIMEOUT)
     except Exception as e:
         _debug_print(f"登录请求异常: {e}")
-        return _set_login_failure("network", type(e).__name__)
+        print(f"登录异常: 请求出错 ({type(e).__name__})")
+        return None
 
     # 无条件输出 HTTP 层诊断（不含 token/cookie 等敏感值），便于在 CI 中定位失败原因。
     # 此前失败原因全藏在 _debug_print 里，DEBUG 未开时无法诊断。
@@ -439,7 +386,7 @@ def session_login(user, password, solver_type, api_base_url, client_key):
         # 非 JSON 响应：极可能是 Cloudflare 挑战页 / 数据中心 IP 被风控拦截
         head = (response.text or "")[:200].replace("\n", " ")
         print(f"[WARN] signIn 返回非 JSON（cloudflare_challenge={_is_cloudflare_challenge(response.text)}）: {head}")
-        return _set_login_failure("network", f"HTTP {response.status_code} 非 JSON 响应")
+        return None
 
     if resp_json.get("success"):
         cookies = session.cookies.get_dict()
@@ -448,30 +395,15 @@ def session_login(user, password, solver_type, api_base_url, client_key):
             #   1) 响应未下发 Set-Cookie -> 服务端对数据中心 IP 的软风控
             #   2) 下发了但未被客户端保存 -> curl_cffi 版本 / cookie 处理问题
             has_set_cookie = any(k.lower() == "set-cookie" for k in response.headers.keys())
-            # redirect 字段说明服务端要求跳转而非直接下发会话，通常是对数据中心 IP 的软风控
             print(f"[WARN] 登录 success=True 但未获取到 Cookie"
-                  f"（响应含 Set-Cookie 头: {has_set_cookie}, JSON 字段: {list(resp_json.keys())}"
-                  f"{', redirect=' + str(resp_json.get('redirect')) if resp_json.get('redirect') else ''}）")
-            return _set_login_failure("no_cookie", f"Set-Cookie={has_set_cookie}")
+                  f"（响应含 Set-Cookie 头: {has_set_cookie}, JSON 字段: {list(resp_json.keys())}）")
+            return None
         cookie_string = '; '.join([f"{k}={v}" for k, v in cookies.items()])
         return cookie_string
 
-    # 服务端要求二次验证（账号开启了邮箱/短信动态码）
-    if resp_json.get("need2FA"):
-        return _set_login_failure("otp", "need2FA")
-
-    # 按服务端返回的 error / message 归类，便于推送可操作的指引
-    error_code = (resp_json.get("error") or "").upper()
-    message = resp_json.get("message") or ""
-    if error_code == "RATE_LIMITED":
-        return _set_login_failure("rate_limited", message)
-    if "high risk" in message.lower():
-        return _set_login_failure("high_risk", message)
-    if resp_json.get("redirect") and "emailSignIn" in str(resp_json.get("redirect")):
-        return _set_login_failure("otp", str(resp_json.get("redirect")))
-
-    # 兜底：显示后端返回的 message（NodeSeek 的通用提示，不含密码等隐私），便于诊断
-    return _set_login_failure("bad_credentials", message or error_code or "未知原因")
+    # 显示后端返回的 message（NodeSeek 的通用提示，不含密码等隐私），便于诊断
+    print(f"登录失败: {resp_json.get('message')}")
+    return None
 
 # ---------------- 签到逻辑 ----------------
 def _is_cloudflare_challenge(text: str) -> bool:
@@ -822,7 +754,7 @@ if __name__ == "__main__":
                     print(f"账号 {masked_user} 登录失败，无法获取新Cookie")
                     if hadsend:
                         try:
-                            send("NodeSeek 登录失败", _build_login_failure_message(masked_user))
+                            send("NodeSeek 登录失败", f"账号 {masked_user} 登录失败")
                         except Exception:
                             print(f"发送通知失败")
             else:
